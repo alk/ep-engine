@@ -18,8 +18,13 @@
 
 #include "tools/cJSON.h"
 
+#include "minimalloc.h"
+#include <stdio.h>
+
 Atomic<uint64_t> Item::casCounter(1);
 const uint32_t Item::metaDataSize(2 * sizeof(uint32_t) + 2 * sizeof(uint64_t) + 2);
+
+Mutex Blob::allocation_mutex;
 
 bool Item::append(const Item &i) {
     assert(value.get() != NULL);
@@ -49,4 +54,65 @@ bool Item::prepend(const Item &i) {
     std::memcpy(newValue + i.getValue()->length(), value->getData(), value->length());
     value.reset(newData);
     return true;
+}
+
+static mini_state *blob_malloc_st;
+
+Blob *Blob::allocate_blob(size_t total_len)
+{
+    void *rv;
+    size_t actual_size;
+    EventuallyPersistentEngine *old = ObjectRegistry::onSwitchThread(NULL, true);
+    {
+        LockHolder lh(allocation_mutex);
+        if (!blob_malloc_st) {
+            blob_malloc_st = mini_init(malloc, free);
+            if (!blob_malloc_st) {
+                abort();
+            }
+        }
+        rv = mini_malloc(blob_malloc_st, total_len);
+        if (!rv) {
+            abort();
+        }
+        actual_size = mini_usable_size(blob_malloc_st, rv);
+    }
+    ObjectRegistry::onSwitchThread(old);
+    ObjectRegistry::memoryAllocated(actual_size);
+    // fprintf(stderr, "Allocated %p of %u\n", rv, total_len);
+    return static_cast<Blob *>(rv);
+}
+
+void Blob::deallocate_blob(Blob *p)
+{
+    size_t returned;
+
+    if (!p) {
+        return;
+    }
+
+    EventuallyPersistentEngine *old = ObjectRegistry::onSwitchThread(NULL, true);
+    {
+        LockHolder lh(allocation_mutex);
+        assert(blob_malloc_st);
+
+        returned = mini_usable_size(blob_malloc_st, p);
+
+        mini_free(blob_malloc_st, p);
+    }
+    // fprintf(stderr, "Freed %p of %u\n", p, returned);
+    ObjectRegistry::onSwitchThread(old);
+    ObjectRegistry::memoryDeallocated(returned);
+}
+
+
+extern "C"
+void printout_blob_mallinfo(void)
+{
+    struct mini_stats stats;
+    {
+        LockHolder lh(Blob::allocation_mutex);
+        mini_get_stats(blob_malloc_st, &stats, 0, 0);
+    }
+    fprintf(stderr, "blob malloc stats:\nos_chunks_count: %u\nfree_spans_count: %u\nfree_space: %llu\n", stats.os_chunks_count, stats.free_spans_count, (unsigned long long)stats.free_space);
 }

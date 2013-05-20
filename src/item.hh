@@ -19,6 +19,10 @@
  */
 class Blob : public RCValue {
 public:
+    static Mutex allocation_mutex;
+    static Blob *allocate_blob(size_t total_len);
+    static void deallocate_blob(Blob *);
+public:
 
     // Constructors.
 
@@ -32,7 +36,7 @@ public:
      */
     static Blob* New(const char *start, const size_t len) {
         size_t total_len = len + sizeof(Blob);
-        Blob *t = new (::operator new(total_len)) Blob(start, len);
+        Blob *t = new (allocate_blob(total_len)) Blob(start, len);
         assert(t->length() == len);
         return t;
     }
@@ -57,7 +61,7 @@ public:
      */
     static Blob* New(const size_t len) {
         size_t total_len = len + sizeof(Blob);
-        Blob *t = new (::operator new(total_len)) Blob(len);
+        Blob *t = new (allocate_blob(total_len)) Blob(len);
         assert(t->length() == len);
         return t;
     }
@@ -95,7 +99,7 @@ public:
     // This is necessary for making C++ happy when I'm doing a
     // placement new on fairly "normal" c++ heap allocations, just
     // with variable-sized objects.
-    void operator delete(void* p) { ::operator delete(p); }
+    void operator delete(void* p) { deallocate_blob((Blob *)p); }
 
     ~Blob() {
         ObjectRegistry::onDeleteBlob(this);

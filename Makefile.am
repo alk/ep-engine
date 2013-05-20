@@ -67,6 +67,7 @@ ep_la_SOURCES =  include/ep-engine/command_ids.h \
                  src/htresizer.cc src/htresizer.hh \
                  src/iomanager/iomanager.cc src/iomanager/iomanager.h \
                  src/item.cc src/item.hh \
+                 src/minimalloc.c src/minimalloc.h \
                  src/item_pager.cc src/item_pager.hh \
                  src/kvstore.hh \
                  src/kvshard.cc src/kvshard.hh \
@@ -179,7 +180,7 @@ EXTRA_TESTS =
 ep_testsuite_la_CPPFLAGS = -I$(top_srcdir)/tests $(AM_CPPFLAGS) ${NO_WERROR}
 ep_testsuite_la_SOURCES= tests/ep_testsuite.cc tests/ep_testsuite.h       \
                          src/atomic.cc src/mutex.cc src/mutex.hh          \
-                         src/item.cc src/testlogger_libify.cc             \
+                         src/item.cc src/minimalloc.c src/testlogger_libify.cc             \
                          src/dispatcher.cc src/ep_time.c src/locks.hh     \
                          src/ep_time.h         \
                          tests/mock/mccouch.cc tests/mock/mccouch.hh      \
@@ -261,7 +262,7 @@ dispatcher_test_DEPENDENCIES = src/common.hh src/dispatcher.hh      \
 dispatcher_test_LDADD = libobjectregistry.la
 
 hash_table_test_CXXFLAGS = $(AM_CPPFLAGS) $(AM_CXXFLAGS) ${NO_WERROR}
-hash_table_test_SOURCES = tests/module_tests/hash_table_test.cc src/item.cc  \
+hash_table_test_SOURCES = tests/module_tests/hash_table_test.cc src/item.cc src/minimalloc.c \
                           src/stored-value.cc src/stored-value.hh            \
                           src/testlogger.cc src/atomic.cc src/mutex.cc       \
                           tools/cJSON.c src/memory_tracker.hh                \
@@ -301,7 +302,7 @@ vbucket_test_SOURCES = tests/module_tests/vbucket_test.cc              \
                src/atomic.cc src/testlogger.cc src/checkpoint.hh 	   \
                src/checkpoint.cc src/byteorder.c src/vbucketmap.cc     \
                src/mutex.cc tests/module_tests/test_memory_tracker.cc  \
-               src/memory_tracker.hh src/item.cc tools/cJSON.c         \
+               src/memory_tracker.hh src/item.cc src/minimalloc.c tools/cJSON.c         \
                src/bgfetcher.hh src/dispatcher.hh src/dispatcher.cc    \
                src/kvshard.hh src/kvshard.cc
 vbucket_test_DEPENDENCIES = src/vbucket.hh src/stored-value.cc     \
@@ -317,7 +318,7 @@ checkpoint_test_SOURCES = tests/module_tests/checkpoint_test.cc                \
                           src/stored-value.hh src/queueditem.hh                \
                           src/byteorder.c src/atomic.cc src/mutex.cc           \
                           tests/module_tests/test_memory_tracker.cc            \
-                          src/memory_tracker.hh src/item.cc tools/cJSON.c      \
+                          src/memory_tracker.hh src/item.cc src/minimalloc.c tools/cJSON.c      \
                           src/bgfetcher.hh src/dispatcher.hh src/dispatcher.cc
 checkpoint_test_DEPENDENCIES = src/checkpoint.hh src/vbucket.hh         \
               src/stored-value.cc src/stored-value.hh src/queueditem.hh \
@@ -333,7 +334,7 @@ mutation_log_test_CXXFLAGS = $(AM_CPPFLAGS) $(AM_CXXFLAGS) ${NO_WERROR}
 mutation_log_test_SOURCES = tests/module_tests/mutation_log_test.cc         \
                             src/mutation_log.hh	src/testlogger.cc           \
                             src/mutation_log.cc src/byteorder.c src/crc32.h \
-                            src/crc32.c src/vbucketmap.cc src/item.cc       \
+                            src/crc32.c src/vbucketmap.cc src/item.cc src/minimalloc.c      \
                             src/atomic.cc src/mutex.cc src/stored-value.cc  \
                             src/ep_time.c src/checkpoint.cc src/kvshard.hh   \
                             src/kvshard.cc src/kvstore.hh
