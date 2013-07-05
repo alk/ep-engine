@@ -384,6 +384,11 @@ public:
                             protocol_binary_request_header *request,
                             ADD_RESPONSE response);
 
+    ENGINE_ERROR_CODE getMany(const void* cookie,
+                              protocol_binary_request_no_extras *request,
+                              ADD_RESPONSE response,
+                              bool);
+
     ENGINE_ERROR_CODE getMeta(const void* cookie,
                               protocol_binary_request_get_meta *request,
                               ADD_RESPONSE response);
@@ -410,12 +415,17 @@ public:
         if (cookie == NULL) {
             LOG(EXTENSION_LOG_WARNING, "Tried to signal a NULL cookie!");
         } else {
+            if ((uintptr_t)cookie & 1) {
+                return notifyIOCompleteMega(cookie, status);
+            }
             BlockTimer bt(&stats.notifyIOHisto);
             EventuallyPersistentEngine *epe = ObjectRegistry::onSwitchThread(NULL, true);
             serverApi->cookie->notify_io_complete(cookie, status);
             ObjectRegistry::onSwitchThread(epe);
         }
     }
+
+    void notifyIOCompleteMega(const void *cookie, ENGINE_ERROR_CODE status);
 
     ENGINE_ERROR_CODE reserveCookie(const void *cookie);
     ENGINE_ERROR_CODE releaseCookie(const void *cookie);

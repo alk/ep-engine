@@ -852,6 +852,9 @@ extern "C" {
         return ENGINE_SUCCESS;
     }
 
+#define CMD_MEGA_GET 0xb3
+#define CMD_MEGA_GET_2 0xb4
+
     static ENGINE_ERROR_CODE processUnknownCommand(EventuallyPersistentEngine *h,
                                                    const void* cookie,
                                                    protocol_binary_request_header *request,
@@ -866,6 +869,14 @@ extern "C" {
         ENGINE_ERROR_CODE rv = ENGINE_SUCCESS;
 
         switch (request->request.opcode) {
+        case CMD_MEGA_GET:
+            {
+                return h->getMany(cookie, (protocol_binary_request_no_extras *)request, response, false);
+            }
+        case CMD_MEGA_GET_2:
+            {
+                return h->getMany(cookie, (protocol_binary_request_no_extras *)request, response, true);
+            }
         case PROTOCOL_BINARY_CMD_GET_VBUCKET:
             {
                 BlockTimer timer(&stats.getVbucketCmdHisto);
@@ -3791,6 +3802,228 @@ static protocol_binary_response_status engine_error_2_protocol_error(ENGINE_ERRO
 
     return ret;
 }
+
+struct GetReq {
+    void *key;
+    int nkey;
+    uint16_t vbucket;
+    uint32_t opaque;
+};
+
+struct ewouldblock_array;
+
+struct ewouldblock_array_item {
+    ewouldblock_array *array;
+};
+
+struct ewouldblock_array {
+    Atomic<int> left_count;
+    const void *cookie;
+    ewouldblock_array_item items[1];
+};
+
+void EventuallyPersistentEngine::notifyIOCompleteMega(const void *cookie, ENGINE_ERROR_CODE status)
+{
+    ewouldblock_array_item *item = (ewouldblock_array_item *)((uintptr_t)cookie & ~1);
+    ewouldblock_array *ew = item->array;
+    item->array = NULL;
+    if (!ew) {
+        LOG(EXTENSION_LOG_WARNING,
+            "get-mega: already signaled %p", item);
+        return;
+    }
+    // LOG(EXTENSION_LOG_WARNING,
+    //     "get-mega: signaling %p (of %p)", item, ew);
+    if (--ew->left_count == 0) {
+        notifyIOComplete(ew->cookie, status);
+        free(ew);
+    }
+}
+
+ENGINE_ERROR_CODE EventuallyPersistentEngine::getMany(
+    const void* cookie,
+    protocol_binary_request_no_extras *request,
+    ADD_RESPONSE response,
+    bool mass_ewouldblock)
+{
+    static int invocation;
+    uint32_t bodylen;
+    uint16_t commands_count;
+    char *req_body = ((char *)request) + sizeof(protocol_binary_request_no_extras);
+
+    int this_invocation = invocation++;
+
+    if (request->message.header.request.extlen != 0 || request->message.header.request.keylen != 0) {
+    einval:
+        return sendResponse(response, NULL, 0, NULL, 0, NULL, 0,
+                            PROTOCOL_BINARY_RAW_BYTES,
+                            PROTOCOL_BINARY_RESPONSE_EINVAL, 0, cookie);
+    }
+
+    bodylen = ntohl(request->message.header.request.bodylen);
+    if (bodylen < 2) {
+        goto einval;
+    }
+
+    memcpy(&commands_count, req_body, sizeof(commands_count));
+    commands_count = ntohs(commands_count);
+    req_body += 2;
+    bodylen -= 2;
+
+    GetReq gr[commands_count];
+    int get_idx;
+
+    for (get_idx = 0; get_idx < commands_count; get_idx++) {
+        if (bodylen < sizeof(protocol_binary_request_no_extras)) {
+            return sendResponse(response, NULL, 0, NULL, 0, NULL, 0,
+                                PROTOCOL_BINARY_RAW_BYTES,
+                                PROTOCOL_BINARY_RESPONSE_EINVAL, 0, cookie);
+        }
+        protocol_binary_request_no_extras rq;
+        memcpy(&rq, req_body, sizeof(rq));
+        if (rq.message.header.request.extlen != 0
+            || rq.message.header.request.extlen != 0) {
+            return sendResponse(response, NULL, 0, NULL, 0, NULL, 0,
+                                PROTOCOL_BINARY_RAW_BYTES,
+                                PROTOCOL_BINARY_RESPONSE_EINVAL, 0, cookie);
+        }
+        req_body += sizeof(rq);
+        bodylen -= sizeof(rq);
+        gr[get_idx].key = req_body;
+        uint16_t nkey = gr[get_idx].nkey = htons(rq.message.header.request.keylen);
+        gr[get_idx].vbucket = htons(rq.message.header.request.vbucket);
+        gr[get_idx].opaque = rq.message.header.request.opaque;
+
+        if (bodylen < nkey) {
+            return sendResponse(response, NULL, 0, NULL, 0, NULL, 0,
+                                PROTOCOL_BINARY_RAW_BYTES,
+                                PROTOCOL_BINARY_RESPONSE_EINVAL, 0, cookie);
+        }
+        bodylen -= nkey;
+        req_body += nkey;
+    }
+
+    item *itm[commands_count];
+
+    ewouldblock_array *ew = 0;
+    if (mass_ewouldblock) {
+        int ew_size = sizeof(ewouldblock_array) + (commands_count - 1) * sizeof(ewouldblock_array_item);
+        ew = (ewouldblock_array *)calloc(1, ew_size);
+        ew->cookie = cookie;
+        ew->left_count = 2;
+    }
+
+    ENGINE_ERROR_CODE rc;
+    int i;
+    bool had_ewouldblock = false;
+    for (i = 0; i < commands_count; i++) {
+        uintptr_t fake_cookie = (uintptr_t)cookie;
+        if (mass_ewouldblock) {
+            fake_cookie = (uintptr_t)(ew->items + i) | 1;
+            ew->items[i].array = ew;
+        }
+        rc = get((const void *)fake_cookie, itm+i, gr[i].key, gr[i].nkey, gr[i].vbucket);
+        if (rc == ENGINE_KEY_ENOENT) {
+            itm[i] = NULL;
+            continue;
+        }
+        if (rc == ENGINE_EWOULDBLOCK && mass_ewouldblock) {
+            ew->left_count++;
+            itm[i] = NULL;
+            had_ewouldblock = true;
+            continue;
+        }
+        if (rc != ENGINE_SUCCESS) {
+            break;
+        }
+    }
+
+    if (had_ewouldblock) {
+        rc = ENGINE_EWOULDBLOCK;
+
+        if (!(ew->left_count -= 2)) {
+            notifyIOComplete(ew->cookie, ENGINE_SUCCESS);
+            free(ew);
+        }
+    }
+
+    if (rc == ENGINE_SUCCESS || rc == ENGINE_KEY_ENOENT) {
+        protocol_binary_response_no_extras resp;
+        int stuff_size = 2;
+        for (i = 0; i < commands_count; i++) {
+            Item *it = reinterpret_cast<Item*>(itm[i]);
+            uint32_t bodylen = it->getNBytes();
+            stuff_size += sizeof(resp) + 4 + bodylen;
+        }
+
+        char stuff[stuff_size];
+        char *p = stuff;
+
+        uint16_t resp_count = htons(commands_count);
+        memcpy(p, &resp_count, 2);
+        p += 2;
+
+        for (i = 0; i < commands_count; i++) {
+            Item *it = reinterpret_cast<Item*>(itm[i]);
+
+            uint16_t status = PROTOCOL_BINARY_RESPONSE_KEY_ENOENT;
+            const void *body;
+            uint32_t bodylen = 0;
+            uint64_t cas = 0;
+
+            memset(&resp, 0, sizeof(resp));
+
+            if (it) {
+                status = PROTOCOL_BINARY_RESPONSE_SUCCESS;
+                body = const_cast<char*>(it->getData());
+                bodylen = it->getNBytes();
+                cas = it->getCas();
+            }
+
+            resp.message.header.response.magic = 0x81;
+            resp.message.header.response.extlen = 4;
+            resp.message.header.response.status = status;
+            resp.message.header.response.bodylen = htonl(bodylen + 4);
+            resp.message.header.response.opaque = gr[i].opaque;
+            resp.message.header.response.cas = cas;
+            memcpy(p, &resp, sizeof(resp));
+            memset(p + sizeof(resp), 0, 4); // extra (flags)
+            memcpy(p + sizeof(resp) + 4, body, bodylen);
+            p += sizeof(resp) + 4 + bodylen;
+            delete it;
+        }
+
+        assert(p == stuff + stuff_size);
+
+        LOG(EXTENSION_LOG_DEBUG,
+            "get-mega: Sending ok (%d)", this_invocation);
+
+        free(ew);
+
+        return sendResponse(response, NULL, 0, NULL, 0, stuff, stuff_size,
+                            PROTOCOL_BINARY_RAW_BYTES,
+                            PROTOCOL_BINARY_RESPONSE_SUCCESS, 0, cookie);
+    }
+
+    for (i--; i >= 0; i--) {
+        Item *it = reinterpret_cast<Item*>(itm[i]);
+        delete it;
+    }
+
+    if (rc == ENGINE_EWOULDBLOCK) {
+        LOG(EXTENSION_LOG_DEBUG,
+            "get-mega: Got EWOULDBLOCK (%d)", this_invocation);
+
+        return ENGINE_EWOULDBLOCK;
+    }
+
+    free(ew);
+
+    return sendResponse(response, NULL, 0, NULL, 0, NULL, 0,
+                        PROTOCOL_BINARY_RAW_BYTES,
+                        engine_error_2_protocol_error(rc), 0, cookie);
+}
+
 
 ENGINE_ERROR_CODE EventuallyPersistentEngine::getMeta(const void* cookie,
                                                       protocol_binary_request_get_meta *request,
