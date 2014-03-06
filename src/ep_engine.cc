@@ -949,8 +949,12 @@ extern "C" {
                 rv = h->handleCheckpointCmds(cookie, request, response);
                 return rv;
             }
-        case CMD_GET_META:
         case CMD_GETQ_META:
+            return h->getMeta((void *)EventuallyPersistentEngine::FAKE_COOKIE,
+                              reinterpret_cast<protocol_binary_request_get_meta*>
+                              (request), response);
+
+        case CMD_GET_META:
             {
                 rv = h->getMeta(cookie,
                                 reinterpret_cast<protocol_binary_request_get_meta*>(request),
@@ -3892,7 +3896,9 @@ ENGINE_ERROR_CODE EventuallyPersistentEngine::getMeta(const void* cookie,
     memcpy(meta + 8, &exp, 4);
     memcpy(meta + 12, &seqno, 8);
 
-    if (rv == ENGINE_SUCCESS) {
+    if (request->message.header.request.opcode == CMD_GETQ_META) {
+        rv = ENGINE_SUCCESS;
+    } else if (rv == ENGINE_SUCCESS) {
         rv = sendResponse(response, NULL, 0, (const void *)meta,
                           20, NULL, 0,
                           PROTOCOL_BINARY_RAW_BYTES,
@@ -3904,15 +3910,23 @@ ENGINE_ERROR_CODE EventuallyPersistentEngine::getMeta(const void* cookie,
                           clusterConfig.len, PROTOCOL_BINARY_RAW_BYTES,
                           PROTOCOL_BINARY_RESPONSE_NOT_MY_VBUCKET, 0, cookie);
     } else if (rv != ENGINE_EWOULDBLOCK) {
-        if (rv == ENGINE_KEY_ENOENT &&
-            request->message.header.request.opcode == CMD_GETQ_META) {
-            rv = ENGINE_SUCCESS;
-        } else {
+        // if (rv == ENGINE_KEY_ENOENT &&
+        //     request->message.header.request.opcode == CMD_GETQ_META) {
+        //     rv = ENGINE_SUCCESS;
+        // } else {
             rv = sendResponse(response, NULL, 0, NULL, 0, NULL, 0,
                               PROTOCOL_BINARY_RAW_BYTES,
                               engine_error_2_protocol_error(rv),
                               metadata.cas, cookie);
-        }
+        // }
+    // } else {
+    //     if ((intptr_t)cookie == EventuallyPersistentEngine::FAKE_COOKIE) {
+    //         rv = ENGINE_KEY_ENOENT;
+    //         rv = sendResponse(response, NULL, 0, NULL, 0, NULL, 0,
+    //                           PROTOCOL_BINARY_RAW_BYTES,
+    //                           engine_error_2_protocol_error(rv),
+    //                           metadata.cas, cookie);
+    //     }
     }
 
     return rv;

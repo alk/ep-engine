@@ -153,6 +153,9 @@ private:
 class EventuallyPersistentEngine : public ENGINE_HANDLE_V1 {
     friend class LookupCallback;
 public:
+
+    static const intptr_t FAKE_COOKIE = -1;
+
     ENGINE_ERROR_CODE initialize(const char* config);
     void destroy(bool force);
 
@@ -415,6 +418,9 @@ public:
     void reportNullCookie(TapConnection &tc);
 
     void notifyIOComplete(const void *cookie, ENGINE_ERROR_CODE status) {
+        if ((intptr_t)cookie == FAKE_COOKIE) {
+            return;
+        }
         if (cookie == NULL) {
             LOG(EXTENSION_LOG_WARNING, "Tried to signal a NULL cookie!");
         } else {

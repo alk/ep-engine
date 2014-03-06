@@ -221,7 +221,7 @@ public:
      *
      * @parapm key the key to get the meta data for
      * @param vbucket the vbucket from which to retrieve the key
-     * @param cookie the connection cookie
+     * @param cookie the connection cookie or NULL if it's just prefetch
      * @param metadata where to store the meta informaion
      * @param true if we want to set the nru bit for the item
      * @param deleted specifies whether or not the key is deleted
